@@ -1,0 +1,89 @@
+pipeline {
+    agent none
+    environment {
+        PYTHONPATH = "${env.WORKSPACE}"
+    }
+
+    stages {
+        stage('Get Code') {
+            agent { label 'LinuxA' }
+            steps {
+                echo "Get Code"
+                sh 'whoami && hostname && echo ${WORKSPACE}'
+                git 'https://github.com/x4ntp0d/helloworld.git'
+                sh 'ls -R'
+                stash name: 'source', includes: '**/*'
+            }
+        }
+
+        stage('Build') {
+            agent { label 'LinuxA' }
+            steps {
+                echo "Build"
+                sh 'whoami && hostname && echo ${WORKSPACE}'
+                // No hay build para Python, pero podríamos instalar deps:
+                // sh 'pip install -r requirements.txt'
+            }
+        }
+
+        stage('Tests') {
+            parallel {
+                stage('Unit') {
+                    agent { label 'LinuxA' }
+                    steps {
+                        echo "Unit Tests"
+                        sh 'whoami && hostname && echo ${WORKSPACE}'
+                        unstash 'source'
+                        sh '''
+                            pytest --junitxml=result-unit.xml test/unit
+                        '''
+                        stash name: 'unit-report', includes: 'result-unit.xml'
+                    }
+                }
+
+                stage('Rest') {
+                    agent { label 'LinuxB' }
+                    environment {
+                        FLASK_APP = 'app/api.py'
+                        FLASK_ENV = 'development'
+                    }
+                    steps {
+                        echo "REST Tests"
+                        sh 'whoami && hostname && echo ${WORKSPACE}'
+                        unstash 'source'
+                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                            sh '''
+                                java -jar test/wiremock/wiremock-standalone-3.13.0.jar \
+                                  --port 9090 --root-dir test/wiremock &
+
+                                flask run --host=0.0.0.0 --port=5000 &
+
+                                sleep 5
+                                pytest --junitxml=result-rest.xml test/rest
+                            '''
+                        }
+                        stash name: 'rest-report', includes: 'result-rest.xml'
+                    }
+                }
+            }
+        }
+
+        stage('Results') {
+            agent { label 'LinuxA' }
+            steps {
+                echo "== Publish Results =="
+                sh 'whoami && hostname && echo ${WORKSPACE}'
+                unstash 'unit-report'
+                unstash 'rest-report'
+                junit 'result-*.xml'
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "Cleaning workspace"
+            cleanWs()
+        }
+    }
+}
