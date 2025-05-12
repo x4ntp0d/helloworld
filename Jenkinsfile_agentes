@@ -1,7 +1,7 @@
 pipeline {
     agent none
     environment {
-        PYTHONPATH = .
+        PYTHONPATH = "${env.WORKSPACE}"
     }
 
     stages {
@@ -71,7 +71,7 @@ pipeline {
         stage('Results') {
             agent { label 'LinuxA' }
             steps {
-                echo "Publish Results"
+                echo "== Publish Results =="
                 sh 'whoami && hostname && echo ${WORKSPACE}'
                 unstash 'unit-report'
                 unstash 'rest-report'
