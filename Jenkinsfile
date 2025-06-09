@@ -8,7 +8,7 @@ pipeline {
     stages {
         stage('Get Code') {
             steps {
-                echo 'Obtenemos el codigo'
+                echo 'Get code'
                 git 'https://github.com/x4ntp0d/helloworld.git'
                 sh 'ls'
             }
@@ -16,7 +16,7 @@ pipeline {
 
         stage('Build') {
             steps {
-                echo 'No compilamos nada, es Python'
+                echo 'Python cannot be compiled, it is interpreted'
             }
         }
 
@@ -24,9 +24,11 @@ pipeline {
             parallel {
                 stage('Unit') {
                     steps {
-                        sh '''
-                            pytest --junitxml=result-unit.xml test/unit
-                        '''
+                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                            sh '''
+                                pytest --junitxml=result-unit.xml test/unit
+                            '''
+                        }
                     }
                 }
 
@@ -43,7 +45,7 @@ pipeline {
                                   --root-dir test/wiremock &
 
                                 flask run --host=0.0.0.0 --port=5000 &
-                                sleep 5
+                                ping -n 10 127.0.0.1             
                                 pytest --junitxml=result-rest.xml test/rest
                             '''
                         }

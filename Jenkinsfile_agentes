@@ -1,89 +1,83 @@
 pipeline {
     agent none
+
     environment {
-        PYTHONPATH = "${env.WORKSPACE}"
+        PYTHONPATH = '.'
     }
 
     stages {
         stage('Get Code') {
             agent { label 'LinuxA' }
             steps {
-                echo "Get Code"
-                sh 'whoami && hostname && echo ${WORKSPACE}'
                 git 'https://github.com/x4ntp0d/helloworld.git'
-                sh 'ls -R'
-                stash name: 'source', includes: '**/*'
+                sh 'whoami && hostname && pwd'
+                echo "Workspace: ${env.WORKSPACE}"
             }
         }
 
-        stage('Build') {
+        stage('Unit Tests + Coverage + JUnit') {
             agent { label 'LinuxA' }
             steps {
-                echo "Build"
-                sh 'whoami && hostname && echo ${WORKSPACE}'
-                // No hay build para Python, pero podríamos instalar deps:
-                // sh 'pip install -r requirements.txt'
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    sh '''
+                        pytest --junitxml=result-unit.xml --cov=app --cov-branch --cov-report=xml test/unit/
+                    '''
+                }
+                junit 'result-unit.xml'
+                recordCoverage tools: [[parser: 'COBERTURA', pattern: 'coverage.xml']], qualityGates: [
+                    [threshold: 96.0, metric: 'LINE', baseline: 'PROJECT', criticality: 'NOTE'],
+                    [threshold: 85.0, metric: 'LINE', baseline: 'PROJECT', criticality: 'ERROR'],
+                    [threshold: 90.0, metric: 'BRANCH', baseline: 'PROJECT', criticality: 'NOTE'],
+                    [threshold: 80.0, metric: 'BRANCH', baseline: 'PROJECT', criticality: 'ERROR']
+                ]
             }
         }
 
-        stage('Tests') {
-            parallel {
-                stage('Unit') {
-                    agent { label 'LinuxA' }
-                    steps {
-                        echo "Unit Tests"
-                        sh 'whoami && hostname && echo ${WORKSPACE}'
-                        unstash 'source'
-                        sh '''
-                            pytest --junitxml=result-unit.xml test/unit
-                        '''
-                        stash name: 'unit-report', includes: 'result-unit.xml'
-                    }
-                }
-
-                stage('Rest') {
-                    agent { label 'LinuxB' }
-                    environment {
-                        FLASK_APP = 'app/api.py'
-                        FLASK_ENV = 'development'
-                    }
-                    steps {
-                        echo "REST Tests"
-                        sh 'whoami && hostname && echo ${WORKSPACE}'
-                        unstash 'source'
-                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                            sh '''
-                                java -jar test/wiremock/wiremock-standalone-3.13.0.jar \
-                                  --port 9090 --root-dir test/wiremock &
-
-                                flask run --host=0.0.0.0 --port=5000 &
-
-                                sleep 5
-                                pytest --junitxml=result-rest.xml test/rest
-                            '''
-                        }
-                        stash name: 'rest-report', includes: 'result-rest.xml'
-                    }
+        stage('Static Analysis (Flake8)') {
+            agent { label 'LinuxB' }
+            steps {
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    sh 'whoami && hostname && pwd'
+                    sh 'flake8 app --format=pylint > flake8.out || true'
+                    recordIssues tools: [flake8(pattern: 'flake8.out')],
+                        qualityGates: [
+                            [threshold: 10, type: 'TOTAL', unstable: false],
+                            [threshold: 8, type: 'TOTAL', unstable: true]
+                        ]
                 }
             }
         }
 
-        stage('Results') {
-            agent { label 'LinuxA' }
+        stage('Security Analysis (Bandit)') {
+            agent { label 'LinuxB' }
             steps {
-                echo "== Publish Results =="
-                sh 'whoami && hostname && echo ${WORKSPACE}'
-                unstash 'unit-report'
-                unstash 'rest-report'
-                junit 'result-*.xml'
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    sh 'whoami && hostname && pwd'
+                    sh 'bandit -r app -f xml -o bandit.xml || true'
+                    recordIssues tools: [bandit(pattern: 'bandit.xml')],
+                        qualityGates: [
+                            [threshold: 4, type: 'TOTAL', unstable: false],
+                            [threshold: 2, type: 'TOTAL', unstable: true]
+                        ]
+                }
             }
         }
-    }
 
-    post {
-        always {
-            echo "Cleaning workspace"
-            cleanWs()
+        stage('Performance Test (JMeter)') {
+            agent { label 'LinuxB' }
+            steps {
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    sh '''
+                        whoami && hostname && pwd
+                        python3 app/main.py &
+                        FLASK_PID=$!
+                        sleep 5
+                        jmeter -n -t test/jmeter/flask.jmx -l result.jtl
+                        kill $FLASK_PID
+                    '''
+                    perfReport sourceDataFiles: 'result.jtl'
+                }
+            }
         }
     }
 }
